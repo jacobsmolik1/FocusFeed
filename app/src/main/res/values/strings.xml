@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FocusFeed</string>
+    <string name="accessibility_service_description">Hides Reels and Shorts tabs in native Instagram and YouTube apps to reduce doomscrolling.</string>
+    <string name="tab_instagram_dm">DMs</string>
+    <string name="tab_instagram_home">Instagram</string>
+    <string name="tab_youtube_subs">YouTube</string>
+</resources>
