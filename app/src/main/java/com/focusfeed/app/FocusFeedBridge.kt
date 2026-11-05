@@ -18,4 +18,7 @@ class FocusFeedBridge(private val context: Context) {
 
     @JavascriptInterface
     fun isHideExplore(): Boolean = FocusPrefs.isHideExplore(context)
+
+    @JavascriptInterface
+    fun isInjectionDisabled(): Boolean = FocusPrefs.isInjectionDisabled(context)
 }

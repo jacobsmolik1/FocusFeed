@@ -43,6 +43,7 @@ class MainActivity : ComponentActivity() {
 private fun FocusFeedApp(vm: FocusFeedViewModel) {
     val ctx = LocalContext.current
     val currentDest by vm.currentDest.collectAsState()
+    val injectionDisabled by vm.injectionDisabled.collectAsState()
 
     val scripts = remember {
         val load: (String) -> String = { name ->
@@ -76,7 +77,7 @@ private fun FocusFeedApp(vm: FocusFeedViewModel) {
             if (currentDest == NavDestination.DASHBOARD) {
                 DashboardScreen(vm)
             } else {
-                key(currentDest) {
+                key(currentDest, injectionDisabled) {
                     WebContainerScreen(
                         dest = currentDest,
                         startUrl = vm.currentUrl(),
