@@ -105,6 +105,17 @@ class WebInjectionGateTest {
     }
 
     @Test
+    fun loadNotice_showsRecoveryOnlyForFailures() {
+        assertEquals(false, LoadNotice.isLoadFailure(null))
+        assertEquals(false, LoadNotice.isLoadFailure("auth-url · paint=ok · chars=83 · www.instagram.com/accounts/login/"))
+        assertEquals(false, LoadNotice.isLoadFailure("no-session · paint=empty · chars=0 in=0/0"))
+        assertEquals(false, LoadNotice.isLoadFailure("inject · paint=ok · chars=400"))
+        assertEquals(true, LoadNotice.isLoadFailure("network-error · code= -2 · www.instagram.com/"))
+        assertEquals(true, LoadNotice.isLoadFailure("http-429 · main frame · www.instagram.com/accounts/login/"))
+        assertEquals(false, LoadNotice.isLoadFailure("http-200 · main frame · www.youtube.com/feed/subscriptions"))
+    }
+
+    @Test
     fun youtubeSubscriptions_stillInject() {
         assertEquals(
             WebInjectionGate.INJECT,
