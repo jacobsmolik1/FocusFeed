@@ -11,12 +11,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 fun WebContainerScreen(
     dest: NavDestination,
     startUrl: String,
-    cssJs: String,
     rulesJs: String,
     modifier: Modifier = Modifier,
     onUrlChanged: (String) -> Unit
 ) {
-    // Survives recompose within the same tab; cleared when composable leaves composition
     val savedState = remember { Bundle() }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
@@ -27,7 +25,7 @@ fun WebContainerScreen(
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
-            val manager = FocusWebViewManager(ctx, cssJs, rulesJs, onUrlChanged)
+            val manager = FocusWebViewManager(ctx, rulesJs, onUrlChanged)
             WebView(ctx).also { wv ->
                 manager.configure(wv)
                 webViewRef = wv
@@ -39,7 +37,6 @@ fun WebContainerScreen(
             }
         },
         update = { wv ->
-            // Only reload if the WebView has no URL yet (e.g. after process recreation)
             if (wv.url == null) wv.loadUrl(startUrl)
         },
         onRelease = { wv ->
@@ -49,8 +46,6 @@ fun WebContainerScreen(
     )
 
     DisposableEffect(Unit) {
-        onDispose {
-            webViewRef?.saveState(savedState)
-        }
+        onDispose { webViewRef?.saveState(savedState) }
     }
 }

@@ -9,9 +9,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.focusfeed.app.FocusAccessibilityService
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 
 @Composable
 fun DashboardScreen(vm: FocusFeedViewModel) {
@@ -24,9 +26,18 @@ fun DashboardScreen(vm: FocusFeedViewModel) {
 
     var watchdogActive by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        vm.refreshStats()
-        watchdogActive = isAccessibilityEnabled(ctx)
+    // Refresh every time the screen resumes so returning from Accessibility Settings
+    // immediately reflects the new watchdog state without requiring a tab switch.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                vm.refreshStats()
+                watchdogActive = isAccessibilityEnabled(ctx)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LazyColumn(
@@ -229,7 +240,7 @@ private fun SettingsRow(
 }
 
 private fun isAccessibilityEnabled(ctx: android.content.Context): Boolean {
-    val service = "${ctx.packageName}/${FocusAccessibilityService::class.java.name}"
+    val service = "${ctx.packageName}/com.focusfeed.app.FocusAccessibilityService"
     val enabled = Settings.Secure.getString(
         ctx.contentResolver,
         Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES

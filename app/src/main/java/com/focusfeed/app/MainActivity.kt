@@ -30,14 +30,13 @@ private fun FocusFeedApp(vm: FocusFeedViewModel) {
     val ctx = LocalContext.current
     val currentDest by vm.currentDest.collectAsState()
 
-    // Load rules JS once; keyed so they reload if assets change between launches
     val scripts = remember {
         val load: (String) -> String = { name ->
             ctx.assets.open(name).bufferedReader().readText()
         }
         mapOf(
             "rules_instagram.js" to load("rules_instagram.js"),
-            "rules_youtube.js" to load("rules_youtube.js")
+            "rules_youtube.js"   to load("rules_youtube.js")
         )
     }
 
@@ -63,17 +62,11 @@ private fun FocusFeedApp(vm: FocusFeedViewModel) {
             if (currentDest == NavDestination.DASHBOARD) {
                 DashboardScreen(vm)
             } else {
-                // key() recreates the WebView only when the tab changes,
-                // preserving in-tab navigation history within the same session.
                 key(currentDest) {
-                    val rulesJs = scripts[currentDest.rulesAsset()] ?: ""
-                    // CSS-only pre-injection: extracts the injectCSS() call from the rules file
-                    val cssJs = "if(typeof injectCSS==='function')injectCSS();"
                     WebContainerScreen(
                         dest = currentDest,
                         startUrl = vm.currentUrl(),
-                        cssJs = cssJs,
-                        rulesJs = rulesJs,
+                        rulesJs = scripts[currentDest.rulesAsset()] ?: "",
                         modifier = Modifier.fillMaxSize(),
                         onUrlChanged = { url -> vm.onPageChanged(currentDest, url) }
                     )

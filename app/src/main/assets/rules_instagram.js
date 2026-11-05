@@ -1,81 +1,65 @@
 (function () {
   'use strict';
 
-  /* ─── Constants ─────────────────────────────────────────────────── */
-  var STYLE_ID   = 'focusfeed-css';
-  var REEL_PATH  = /^\/(reel|p)\/[A-Za-z0-9_-]+\/?/;
+  /* ─── Guard: register observers/patches only once per page lifetime ─── */
+  var _registered = !!window.__ff_ig_registered;
+  window.__ff_ig_registered = true;
+
+  /* ─── Constants ──────────────────────────────────────────────────────── */
+  var STYLE_ID    = 'focusfeed-css';
+  var REEL_PATH   = /^\/(reel|p)\/[A-Za-z0-9_-]+\/?/;
   var DEBOUNCE_MS = 15;
 
-  /* ─── Preference helpers ─────────────────────────────────────────── */
-  function hideExplore() {
-    try { return window.FocusFeedBridge && FocusFeedBridge.getPref('hideExplore') === true; }
+  /* ─── Preference helpers ─────────────────────────────────────────────── */
+  function prefHideExplore() {
+    try { return !!(window.FocusFeedBridge && FocusFeedBridge.isHideExplore()); }
+    catch (e) { return true; }
+  }
+
+  function prefStrictDmOnly() {
+    try { return !!(window.FocusFeedBridge && FocusFeedBridge.isStrictDmOnly()); }
     catch (e) { return false; }
   }
 
-  function isStrictDmOnly() {
-    try { return window.FocusFeedBridge && FocusFeedBridge.isStrictDmOnly() === true; }
-    catch (e) { return false; }
-  }
-
-  /* ─── Bridge helper ──────────────────────────────────────────────── */
+  /* ─── Bridge helper ──────────────────────────────────────────────────── */
   function recordBlock() {
-    try {
-      if (window.FocusFeedBridge) FocusFeedBridge.recordBlock('instagram');
-    } catch (e) { /* ignore */ }
+    try { if (window.FocusFeedBridge) FocusFeedBridge.recordBlock('instagram'); }
+    catch (e) { /* bridge not ready yet */ }
   }
 
-  /* ─── CSS shield ─────────────────────────────────────────────────── */
+  /* ─── CSS shield ─────────────────────────────────────────────────────── */
   function buildCSS() {
-    var exploreRule = hideExplore()
-      ? 'a[href^="/explore"] { display: none !important; }\n'
-      : '';
-
-    var strictRule = isStrictDmOnly()
-      ? 'body > * > *:not([href^="/direct"]):not([aria-label="Messages" i]):not([aria-label="Notifications" i]) { display: none !important; }\n'
-      : '';
-
     return (
-      /* ── Reels nav / tab entries ──────────────────────────────────── */
       'a[href^="/reels"]                             { display: none !important; }\n' +
       'a[href*="/reels/"]                            { display: none !important; }\n' +
-      exploreRule +
-
-      /* ── Reels button / bloks components ────────────────────────── */
+      (prefHideExplore()
+        ? 'a[href^="/explore"]                       { display: none !important; }\n'
+        : '') +
       '[role="button"][aria-label*="Reel" i]         { display: none !important; }\n' +
       '[data-bloks-name*="reel"]                     { display: none !important; }\n' +
       '[data-bloks-name*="clips"]                    { display: none !important; }\n' +
-
-      /* ── Suggested headers and their parent cards ────────────────── */
       '[data-bloks-name*="suggested_header"]         { display: none !important; }\n' +
       'article:has([data-bloks-name*="suggested"])   { display: none !important; }\n' +
-
-      /* ── Preserve DMs / Messages / Notifications / stories ───────── */
+      /* Preserve DMs / Messages / Notifications / stories */
       'a[href^="/direct"]                            { display: unset !important; }\n' +
       '[aria-label="Messages" i]                     { display: unset !important; }\n' +
       '[aria-label="Notifications" i]                { display: unset !important; }\n' +
-      /* stories tray rows */
       '[aria-label="Stories tray"]                   { display: unset !important; }\n' +
-      '[data-bloks-name*="stories_tray"]             { display: unset !important; }\n' +
-
-      strictRule
+      '[data-bloks-name*="stories_tray"]             { display: unset !important; }\n'
     );
   }
 
   function injectCSS() {
     var existing = document.getElementById(STYLE_ID);
     var css = buildCSS();
-    if (existing) {
-      /* Refresh content in case prefs changed */
-      existing.textContent = css;
-      return;
-    }
+    if (existing) { existing.textContent = css; return; }
     var el = document.createElement('style');
     el.id = STYLE_ID;
     el.textContent = css;
     (document.head || document.documentElement).appendChild(el);
   }
 
-  /* ─── Text-node walk for "Suggested" headers ─────────────────────── */
+  /* ─── Text-node walk for "Suggested" headers ─────────────────────────── */
   function hasSuggestedHeader(el) {
     var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
     var node;
@@ -86,9 +70,7 @@
     return false;
   }
 
-  /* ─── DOM sweep ──────────────────────────────────────────────────── */
-  var _blocked = false;
-
+  /* ─── DOM sweep ──────────────────────────────────────────────────────── */
   function sweepFeed() {
     var blocked = false;
 
@@ -97,14 +79,12 @@
     for (var i = 0; i < cards.length; i++) {
       var card = cards[i];
       if (card.style.display === 'none') continue;
-      var hide = false;
-
-      if (card.querySelector('a[href*="/reels/"]'))            hide = true;
-      if (!hide && card.querySelector('[aria-label*="Reel" i]')) hide = true;
-      if (!hide && card.querySelector('[aria-label*="Clips" i]')) hide = true;
-      if (!hide && hasSuggestedHeader(card))                    hide = true;
-
-      if (hide) {
+      if (
+        card.querySelector('a[href*="/reels/"]') ||
+        card.querySelector('[aria-label*="Reel" i]') ||
+        card.querySelector('[aria-label*="Clips" i]') ||
+        hasSuggestedHeader(card)
+      ) {
         card.style.display = 'none';
         blocked = true;
       }
@@ -118,45 +98,35 @@
       if (
         href.startsWith('/reels') ||
         href.indexOf('/reels/') !== -1 ||
-        (hideExplore() && href.startsWith('/explore'))
+        (prefHideExplore() && href.startsWith('/explore'))
       ) {
         link.style.display = 'none';
         blocked = true;
       }
     }
 
-    /* Strict DM-only mode: hide everything except DM links */
-    if (isStrictDmOnly()) {
-      var allLinks = document.querySelectorAll('a');
-      for (var k = 0; k < allLinks.length; k++) {
-        var aEl = allLinks[k];
-        var aHref = aEl.getAttribute('href') || '';
-        if (!aHref.startsWith('/direct')) {
-          aEl.style.display = 'none';
-          blocked = true;
-        }
-      }
-    }
+    if (blocked) recordBlock();
+  }
 
-    if (blocked && !_blocked) {
-      _blocked = true;
-      recordBlock();
+  /* ─── Strict DM-only: redirect if not on /direct/ ───────────────────── */
+  function enforceStrictMode() {
+    if (!prefStrictDmOnly()) return;
+    if (location.pathname.indexOf('/direct') !== 0) {
+      window.location.replace('https://www.instagram.com/direct/inbox/');
     }
   }
 
-  /* ─── Swipe guard ────────────────────────────────────────────────── */
+  /* ─── Swipe guard (single-video DM links) ────────────────────────────── */
   var _swipeGuardActive = false;
   var _touchStartY = 0;
 
   function onTouchStart(e) {
-    _touchStartY = e.touches[0].clientY;
+    _touchStartY = (e.touches[0] && e.touches[0].clientY) || 0;
   }
-
   function onTouchMove(e) {
-    var delta = Math.abs(e.touches[0].clientY - _touchStartY);
+    var delta = Math.abs(((e.touches[0] && e.touches[0].clientY) || _touchStartY) - _touchStartY);
     if (delta > 20) e.stopImmediatePropagation();
   }
-
   function onWheel(e) {
     if (Math.abs(e.deltaY) > 20) e.stopImmediatePropagation();
   }
@@ -185,7 +155,7 @@
     }
   }
 
-  /* ─── SPA navigation ─────────────────────────────────────────────── */
+  /* ─── SPA navigation ─────────────────────────────────────────────────── */
   var _navTimer = null;
 
   function onNavigate(url) {
@@ -193,8 +163,8 @@
     _navTimer = setTimeout(function () {
       injectCSS();
       sweepFeed();
-
-      var path = (typeof url === 'string') ? url.replace(/\?.*$/, '') : location.pathname;
+      enforceStrictMode();
+      var path = typeof url === 'string' ? url.replace(/\?.*$/, '') : location.pathname;
       if (REEL_PATH.test(path)) {
         installSwipeGuard();
         removeQueuedReelSiblings();
@@ -204,48 +174,44 @@
     }, DEBOUNCE_MS);
   }
 
-  function patchHistory() {
-    var origPush    = history.pushState.bind(history);
-    var origReplace = history.replaceState.bind(history);
-
-    history.pushState = function (state, title, url) {
-      origPush(state, title, url);
-      onNavigate(typeof url === 'string' ? url : location.pathname);
-    };
-
-    history.replaceState = function (state, title, url) {
-      origReplace(state, title, url);
-      onNavigate(typeof url === 'string' ? url : location.pathname);
-    };
-
-    window.addEventListener('popstate', function () {
-      onNavigate(location.pathname);
-    });
-  }
-
-  /* ─── MutationObserver ───────────────────────────────────────────── */
+  /* ─── MutationObserver ───────────────────────────────────────────────── */
   var _mutTimer = null;
 
   function startObserver() {
     var root = document.getElementById('root') || document.body;
-    if (!root) return;
-
+    if (!root) { setTimeout(startObserver, 100); return; }
     var obs = new MutationObserver(function () {
       clearTimeout(_mutTimer);
-      _mutTimer = setTimeout(function () {
-        injectCSS();
-        sweepFeed();
-      }, DEBOUNCE_MS);
+      _mutTimer = setTimeout(function () { injectCSS(); sweepFeed(); }, DEBOUNCE_MS);
     });
-
     obs.observe(root, { childList: true, subtree: true });
   }
 
-  /* ─── Boot ───────────────────────────────────────────────────────── */
+  /* ─── History patches ────────────────────────────────────────────────── */
+  function patchHistory() {
+    var origPush    = history.pushState.bind(history);
+    var origReplace = history.replaceState.bind(history);
+    history.pushState = function (s, t, url) {
+      origPush(s, t, url);
+      onNavigate(typeof url === 'string' ? url : location.pathname);
+    };
+    history.replaceState = function (s, t, url) {
+      origReplace(s, t, url);
+      onNavigate(typeof url === 'string' ? url : location.pathname);
+    };
+    window.addEventListener('popstate', function () { onNavigate(location.pathname); });
+  }
+
+  /* ─── Boot ───────────────────────────────────────────────────────────── */
   injectCSS();
   sweepFeed();
-  patchHistory();
-  startObserver();
+  enforceStrictMode();
+
+  if (!_registered) {
+    patchHistory();
+    startObserver();
+  }
+
   onNavigate(location.pathname);
 
 })();

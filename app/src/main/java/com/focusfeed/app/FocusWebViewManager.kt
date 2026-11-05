@@ -3,7 +3,6 @@ package com.focusfeed.app
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.net.Uri
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -15,7 +14,6 @@ import android.webkit.WebViewClient
 
 class FocusWebViewManager(
     private val context: Context,
-    private val cssJs: String,
     private val rulesJs: String,
     private val onUrlChanged: (String) -> Unit
 ) {
@@ -29,9 +27,7 @@ class FocusWebViewManager(
         "googleusercontent.com", "gstatic.com"
     )
 
-    // Telemetry endpoints that serve no functional purpose in this app
     private val blockedDomainFragments = listOf(
-        "graph.facebook.com",
         "analytics.google.com",
         "doubleclick.net",
         "googleadservices.com"
@@ -41,21 +37,25 @@ class FocusWebViewManager(
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
-            // CSS shield first — prevents any flash of blocked content
-            view.evaluateJavascript(cssJs, null)
+            // Inject early: the JS guard (window.__ff_ig_registered) prevents
+            // double-registration of MutationObserver and history patches on the
+            // subsequent onPageFinished call. This call gets CSS shielding in place
+            // before the browser paints any blocked elements.
+            view.evaluateJavascript(rulesJs, null)
             onUrlChanged(url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             super.onPageFinished(view, url)
-            // Full rules engine: MutationObserver, SPA interceptor, swipe guard
+            // Second injection: the guard skips re-registration; only injectCSS(),
+            // sweepFeed()/sweepShorts(), and onNavigate() run again to catch any
+            // late-rendered elements that weren't present at page start.
             view.evaluateJavascript(rulesJs, null)
         }
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val host = request.url.host?.removePrefix("www.") ?: return false
             if (allowedHosts.any { it.removePrefix("www.") == host }) return false
-            // Open external links in the system browser, never inside our WebView
             runCatching {
                 context.startActivity(
                     Intent(Intent.ACTION_VIEW, request.url).apply {
@@ -71,11 +71,9 @@ class FocusWebViewManager(
             request: WebResourceRequest
         ): WebResourceResponse? {
             val url = request.url.toString()
-            // Block telemetry to trackers that have no UX role
             if (blockedDomainFragments.any { url.contains(it) }) {
                 return WebResourceResponse("text/plain", "utf-8", null)
             }
-            // Prevent file:// and content:// scheme leaks
             val scheme = request.url.scheme ?: ""
             if (scheme == "file" || scheme == "content") {
                 return WebResourceResponse("text/plain", "utf-8", null)
@@ -85,7 +83,6 @@ class FocusWebViewManager(
     }
 
     inner class ChromeClient : WebChromeClient() {
-        // Suppress console noise from site JS in logcat
         override fun onConsoleMessage(msg: ConsoleMessage): Boolean = true
     }
 
@@ -102,7 +99,6 @@ class FocusWebViewManager(
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             allowFileAccess = false
             allowContentAccess = false
-            // Chrome 128 on Pixel 8 — avoids "open in app" prompts and degraded fallbacks
             userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A.240805.005) " +
                 "AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/128.0.6613.88 Mobile Safari/537.36"
