@@ -3,6 +3,7 @@ package com.focusfeed.app
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Message
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -24,8 +25,10 @@ class FocusWebViewManager(
     private val allowedHosts = setOf(
         // Instagram / Meta
         "instagram.com", "www.instagram.com", "i.instagram.com",
+        "api.instagram.com", "graph.instagram.com",
         "cdninstagram.com", "fbcdn.net",
         "facebook.com", "www.facebook.com", "accounts.facebook.com",
+        "m.facebook.com", "connect.facebook.net",
         "meta.com", "www.meta.com",
         // YouTube / Google
         "youtube.com", "www.youtube.com", "m.youtube.com",
@@ -40,7 +43,6 @@ class FocusWebViewManager(
         "googleadservices.com"
     )
 
-    // Origins for document-start JS injection (platform-specific)
     private val documentStartOrigins: Set<String> get() = when (dest) {
         NavDestination.INSTAGRAM_DM,
         NavDestination.INSTAGRAM_HOME -> setOf("https://www.instagram.com", "https://instagram.com")
@@ -52,23 +54,41 @@ class FocusWebViewManager(
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
-            // Fallback injection for devices where DOCUMENT_START_SCRIPT isn't supported
             view.evaluateJavascript(rulesJs, null)
             onUrlChanged(url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             super.onPageFinished(view, url)
-            // Second pass: guard in JS prevents double-registration of observers/patches
             view.evaluateJavascript(rulesJs, null)
         }
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            val host = request.url.host?.removePrefix("www.") ?: return false
+            val url = request.url
+            val scheme = url.scheme?.lowercase() ?: return true
+
+            // Only allow WebView to navigate http/https — everything else must be
+            // dispatched externally or blocked to prevent crashes on intent:// etc.
+            if (scheme != "https" && scheme != "http") {
+                if (scheme == "intent") {
+                    // Android intent URL — try to start the target activity
+                    runCatching {
+                        val intent = Intent.parseUri(url.toString(), Intent.URI_INTENT_SCHEME)
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                    }
+                }
+                // All other non-http schemes (market://, fb://, etc.) are blocked silently
+                return true
+            }
+
+            val host = url.host?.removePrefix("www.") ?: return true
             if (allowedHosts.any { it.removePrefix("www.") == host }) return false
+
+            // External http/https link — open in system browser
             runCatching {
                 context.startActivity(
-                    Intent(Intent.ACTION_VIEW, request.url).apply {
+                    Intent(Intent.ACTION_VIEW, url).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                 )
@@ -93,12 +113,42 @@ class FocusWebViewManager(
     }
 
     inner class ChromeClient : WebChromeClient() {
+
         override fun onConsoleMessage(msg: ConsoleMessage): Boolean = true
+
+        // Instagram's Facebook OAuth login opens in a new window via window.open().
+        // Without this handler the popup silently fails and login never completes.
+        override fun onCreateWindow(
+            view: WebView,
+            isDialog: Boolean,
+            isUserGesture: Boolean,
+            resultMsg: Message
+        ): Boolean {
+            val popup = WebView(context).also { wv ->
+                wv.settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                }
+                CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+                wv.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean {
+                        // Once the OAuth popup finishes, it navigates the opener page
+                        view.loadUrl(r.url.toString())
+                        wv.destroy()
+                        return true
+                    }
+                }
+                wv.webChromeClient = object : WebChromeClient() {
+                    override fun onCloseWindow(w: WebView) { w.destroy() }
+                }
+            }
+            (resultMsg.obj as WebView.WebViewTransport).webView = popup
+            resultMsg.sendToTarget()
+            return true
+        }
     }
 
     fun configure(webView: WebView) {
-        // Build UA from the device's actual WebView string, stripping the "; wv" marker.
-        // Instagram and YouTube detect "; wv" and serve a degraded / login-broken UI.
         val baseUa = WebSettings.getDefaultUserAgent(context)
         val cleanUa = baseUa
             .replace("; wv", "")
@@ -120,7 +170,6 @@ class FocusWebViewManager(
             userAgentString = cleanUa
         }
 
-        // Instagram login and session require cross-domain cookies (Meta CDN, fbcdn.net)
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setAcceptThirdPartyCookies(webView, true)
@@ -131,8 +180,6 @@ class FocusWebViewManager(
         webView.addJavascriptInterface(FocusFeedBridge(context), "FocusFeedBridge")
         webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
 
-        // addDocumentStartJavaScript runs before ANY page JS — the gold standard.
-        // The fallback onPageStarted + onPageFinished path above covers older WebViews.
         val origins = documentStartOrigins
         if (origins.isNotEmpty() &&
             WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)

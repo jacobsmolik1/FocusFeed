@@ -22,25 +22,22 @@
     if (match) window.location.replace('/watch?v=' + match[1]);
   }
 
-  /* ─── CSS shield ─────────────────────────────────────────────────────── */
+  /* ─── CSS shield (no :has() — not safe to assume WebView version) ────── */
   var CSS = (
-    '#shorts-container                                                       { display: none !important; }\n' +
-    'ytd-shorts                                                              { display: none !important; }\n' +
-    'ytd-reel-shelf-renderer                                                 { display: none !important; }\n' +
-    'ytd-rich-shelf-renderer[is-shorts]                                      { display: none !important; }\n' +
-    'ytd-rich-section-renderer:has(ytd-reel-shelf-renderer)                 { display: none !important; }\n' +
-    'ytd-rich-section-renderer:has(ytd-reel-video-renderer)                 { display: none !important; }\n' +
-    'ytm-reel-shelf-renderer                                                 { display: none !important; }\n' +
-    'ytm-pivot-bar-item-renderer:has(a[href*="shorts"])                     { display: none !important; }\n' +
-    'ytm-pivot-bar-item-renderer > [aria-label*="Short" i]                  { display: none !important; }\n' +
-    'yt-chip-cloud-chip-renderer:has([aria-label*="Short" i])               { display: none !important; }\n' +
-    'ytd-guide-entry-renderer:has(a[href="/shorts"])                        { display: none !important; }\n' +
-    'ytd-mini-guide-entry-renderer:has(a[href="/shorts"])                   { display: none !important; }\n' +
-    'ytd-video-renderer:has(a[href*="/shorts/"])                            { display: none !important; }\n' +
-    'ytd-compact-video-renderer:has(a[href*="/shorts/"])                    { display: none !important; }\n' +
-    'ytd-grid-video-renderer:has(a[href*="/shorts/"])                       { display: none !important; }\n' +
-    'ytd-rich-item-renderer:has(a[href*="/shorts/"])                        { display: none !important; }\n' +
-    'ytd-shelf-renderer[layout-type="shorts-shelf"]                         { display: none !important; }\n'
+    /* Explicit Shorts containers */
+    '#shorts-container                                       { display: none !important; }\n' +
+    'ytd-shorts                                              { display: none !important; }\n' +
+    'ytd-reel-shelf-renderer                                 { display: none !important; }\n' +
+    'ytd-rich-shelf-renderer[is-shorts]                      { display: none !important; }\n' +
+    'ytm-reel-shelf-renderer                                 { display: none !important; }\n' +
+    /* Mobile pivot bar Shorts entry */
+    'ytm-pivot-bar-item-renderer[tab-identifier="FEshorts"] { display: none !important; }\n' +
+    /* Guide sidebar — matched by href, no :has() needed */
+    'ytd-guide-entry-renderer a[href="/shorts"]              { display: none !important; }\n' +
+    'ytd-mini-guide-entry-renderer a[href="/shorts"]         { display: none !important; }\n' +
+    /* Shorts badge overlay — hiding the badge makes the item look normal;
+       the JS sweep below hides the whole card */
+    'ytd-thumbnail-overlay-time-status-renderer[overlay-style="SHORTS"] { display: none !important; }\n'
   );
 
   function injectCSS() {
@@ -55,68 +52,71 @@
   function sweepShorts() {
     var blocked = false;
 
-    var labeled = document.querySelectorAll('[aria-label]');
-    for (var i = 0; i < labeled.length; i++) {
-      var el = labeled[i];
+    /* 1. Hide entire cards that contain a Shorts overlay badge.
+          This works without :has() by walking up from the badge itself. */
+    document.querySelectorAll(
+      'ytd-thumbnail-overlay-time-status-renderer[overlay-style="SHORTS"]'
+    ).forEach(function (badge) {
+      var card = badge.closest(
+        'ytd-rich-item-renderer, ytd-grid-video-renderer, ' +
+        'ytd-compact-video-renderer, ytd-video-renderer'
+      );
+      if (card && card.style.display !== 'none') {
+        card.style.display = 'none';
+        blocked = true;
+      }
+    });
+
+    /* 2. Hide Shorts shelf sections — reel-shelf-renderer has no ambiguity */
+    document.querySelectorAll(
+      'ytd-reel-shelf-renderer, ytd-rich-shelf-renderer[is-shorts]'
+    ).forEach(function (shelf) {
+      var section = shelf.parentElement || shelf;
+      if (section.tagName && section.tagName.toLowerCase() === 'ytd-rich-section-renderer') {
+        if (section.style.display !== 'none') { section.style.display = 'none'; blocked = true; }
+      } else {
+        if (shelf.style.display !== 'none') { shelf.style.display = 'none'; blocked = true; }
+      }
+    });
+
+    /* 3. Hide Shorts cards identified by /shorts/ in their href */
+    document.querySelectorAll('a[href*="/shorts/"]').forEach(function (a) {
+      var card = a.closest(
+        'ytd-rich-item-renderer, ytd-grid-video-renderer, ' +
+        'ytd-compact-video-renderer, ytd-video-renderer'
+      );
+      if (card && card.style.display !== 'none') {
+        card.style.display = 'none';
+        blocked = true;
+      }
+    });
+
+    /* 4. aria-label sweep for nav containers (localization-resilient) */
+    document.querySelectorAll('[aria-label]').forEach(function (el) {
       var label = (el.getAttribute('aria-label') || '').trim().toLowerCase();
       if (label === 'shorts' || label.indexOf('shorts ') === 0) {
-        var navContainer = el.closest(
+        var nav = el.closest(
           'ytm-pivot-bar-item-renderer, ytd-guide-entry-renderer, ' +
-          'ytd-mini-guide-entry-renderer, nav, [role="navigation"]'
+          'ytd-mini-guide-entry-renderer, [role="tab"]'
         );
-        var target = navContainer || el;
+        var target = nav || el;
         if (target.style.display !== 'none') { target.style.display = 'none'; blocked = true; }
       }
-    }
+    });
 
-    var epEls = document.querySelectorAll('[endpoint*="shorts"], [page-type="SHORTS"]');
-    for (var j = 0; j < epEls.length; j++) {
-      var epEl = epEls[j];
-      var card = epEl.closest(
+    /* 5. endpoint / page-type attribute sweep */
+    document.querySelectorAll('[endpoint*="shorts"], [page-type="SHORTS"]').forEach(function (el) {
+      var card = el.closest(
         'ytd-rich-item-renderer, ytm-pivot-bar-item-renderer, ytd-compact-video-renderer'
       );
-      var epTarget = card || epEl;
-      if (epTarget.style.display !== 'none') { epTarget.style.display = 'none'; blocked = true; }
-    }
+      var target = card || el;
+      if (target.style.display !== 'none') { target.style.display = 'none'; blocked = true; }
+    });
 
     if (blocked) recordBlock();
   }
 
-  /* ─── SPA navigation ─────────────────────────────────────────────────── */
-  var _navTimer = null;
-
-  function onNavigate() {
-    clearTimeout(_navTimer);
-    _navTimer = setTimeout(function () {
-      redirectIfShorts();
-      injectCSS();
-      sweepShorts();
-    }, DEBOUNCE_MS);
-  }
-
-  /* ─── MutationObserver ───────────────────────────────────────────────── */
-  var _mutTimer = null;
-
-  function startObserver() {
-    var root = document.querySelector('ytd-app, ytm-app, body');
-    if (!root) { setTimeout(startObserver, 100); return; }
-    var obs = new MutationObserver(function () {
-      clearTimeout(_mutTimer);
-      _mutTimer = setTimeout(function () { injectCSS(); sweepShorts(); }, DEBOUNCE_MS);
-    });
-    obs.observe(root, { childList: true, subtree: true });
-  }
-
-  /* ─── History patches ────────────────────────────────────────────────── */
-  function patchHistory() {
-    var origPush    = history.pushState.bind(history);
-    var origReplace = history.replaceState.bind(history);
-    history.pushState = function (s, t, url) { origPush(s, t, url); onNavigate(); };
-    history.replaceState = function (s, t, url) { origReplace(s, t, url); onNavigate(); };
-    window.addEventListener('popstate', onNavigate);
-  }
-
-  /* ─── Click interception (block Shorts links before navigation fires) ── */
+  /* ─── Click interception ─────────────────────────────────────────────── */
   function installClickGuard() {
     document.addEventListener('click', function (e) {
       var a = e.target && e.target.closest && e.target.closest('a[href]');
@@ -141,6 +141,37 @@
         sweepShorts();
       }
     }, 400);
+  }
+
+  /* ─── SPA navigation ─────────────────────────────────────────────────── */
+  var _navTimer = null;
+  function onNavigate() {
+    clearTimeout(_navTimer);
+    _navTimer = setTimeout(function () {
+      redirectIfShorts();
+      injectCSS();
+      sweepShorts();
+    }, DEBOUNCE_MS);
+  }
+
+  function patchHistory() {
+    var origPush    = history.pushState.bind(history);
+    var origReplace = history.replaceState.bind(history);
+    history.pushState    = function (s, t, u) { origPush(s, t, u);    onNavigate(); };
+    history.replaceState = function (s, t, u) { origReplace(s, t, u); onNavigate(); };
+    window.addEventListener('popstate', onNavigate);
+  }
+
+  /* ─── MutationObserver ───────────────────────────────────────────────── */
+  var _mutTimer = null;
+  function startObserver() {
+    var root = document.querySelector('ytd-app, ytm-app, body');
+    if (!root) { setTimeout(startObserver, 100); return; }
+    var obs = new MutationObserver(function () {
+      clearTimeout(_mutTimer);
+      _mutTimer = setTimeout(function () { injectCSS(); sweepShorts(); }, DEBOUNCE_MS);
+    });
+    obs.observe(root, { childList: true, subtree: true });
   }
 
   /* ─── Boot ───────────────────────────────────────────────────────────── */
