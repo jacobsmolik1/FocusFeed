@@ -136,7 +136,13 @@ class FocusWebViewManager(
 
     inner class ChromeClient : WebChromeClient() {
 
-        override fun onConsoleMessage(msg: ConsoleMessage): Boolean = true
+        override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+            if (msg.messageLevel() == ConsoleMessage.MessageLevel.ERROR ||
+                msg.messageLevel() == ConsoleMessage.MessageLevel.WARNING) {
+                Log.w("FF_JS", "[${msg.messageLevel()}] ${msg.message()} (${msg.sourceId()}:${msg.lineNumber()})")
+            }
+            return true
+        }
 
         // Instagram's Facebook OAuth login opens in a new window via window.open().
         // Without this handler the popup silently fails and login never completes.
@@ -201,14 +207,14 @@ class FocusWebViewManager(
         webView.webViewClient = Client()
         webView.webChromeClient = ChromeClient()
         webView.addJavascriptInterface(FocusFeedBridge(context), "FocusFeedBridge")
-        webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
 
-        val origins = documentStartOrigins
-        if (origins.isNotEmpty() &&
-            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
-        ) {
-            WebViewCompat.addDocumentStartJavaScript(webView, rulesJs, origins)
-        }
+        // Disabled temporarily for diagnostics — relying on onPageStarted/onPageFinished only
+        // val origins = documentStartOrigins
+        // if (origins.isNotEmpty() &&
+        //     WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        // ) {
+        //     WebViewCompat.addDocumentStartJavaScript(webView, rulesJs, origins)
+        // }
     }
 
     fun flush() {

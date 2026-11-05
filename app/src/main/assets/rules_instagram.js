@@ -71,8 +71,9 @@
   function sweepFeed() {
     var blocked = false;
 
-    /* Article / presentation cards */
-    var cards = document.querySelectorAll('article, [role="presentation"]');
+    /* Feed post cards — article only; [role="presentation"] is too broad
+       (Instagram wraps the entire page root in it, hiding everything) */
+    var cards = document.querySelectorAll('article');
     for (var i = 0; i < cards.length; i++) {
       var card = cards[i];
       if (card.style.display === 'none') continue;
