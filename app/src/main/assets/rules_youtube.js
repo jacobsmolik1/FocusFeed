@@ -116,6 +116,33 @@
     window.addEventListener('popstate', onNavigate);
   }
 
+  /* ─── Click interception (block Shorts links before navigation fires) ── */
+  function installClickGuard() {
+    document.addEventListener('click', function (e) {
+      var a = e.target && e.target.closest && e.target.closest('a[href]');
+      if (!a) return;
+      var href = a.getAttribute('href') || '';
+      if (href.indexOf('/shorts/') !== -1 || href === '/shorts') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    }, true);
+  }
+
+  /* ─── Polling fallback ───────────────────────────────────────────────── */
+  var _lastPolledPath = '';
+  function startPolling() {
+    setInterval(function () {
+      var p = location.pathname;
+      if (p !== _lastPolledPath) {
+        _lastPolledPath = p;
+        redirectIfShorts();
+        injectCSS();
+        sweepShorts();
+      }
+    }, 400);
+  }
+
   /* ─── Boot ───────────────────────────────────────────────────────────── */
   redirectIfShorts();
   injectCSS();
@@ -124,6 +151,8 @@
   if (!_registered) {
     patchHistory();
     startObserver();
+    installClickGuard();
+    startPolling();
   }
 
 })();

@@ -25,7 +25,7 @@ fun WebContainerScreen(
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
-            val manager = FocusWebViewManager(ctx, rulesJs, onUrlChanged)
+            val manager = FocusWebViewManager(ctx, dest, rulesJs, onUrlChanged)
             WebView(ctx).also { wv ->
                 manager.configure(wv)
                 webViewRef = wv

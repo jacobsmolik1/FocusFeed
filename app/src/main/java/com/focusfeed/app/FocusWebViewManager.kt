@@ -11,20 +11,27 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
 class FocusWebViewManager(
     private val context: Context,
+    private val dest: NavDestination,
     private val rulesJs: String,
     private val onUrlChanged: (String) -> Unit
 ) {
 
     private val allowedHosts = setOf(
+        // Instagram / Meta
         "instagram.com", "www.instagram.com", "i.instagram.com",
         "cdninstagram.com", "fbcdn.net",
+        "facebook.com", "www.facebook.com", "accounts.facebook.com",
+        "meta.com", "www.meta.com",
+        // YouTube / Google
         "youtube.com", "www.youtube.com", "m.youtube.com",
         "youtu.be", "yt3.ggpht.com", "ytimg.com", "i.ytimg.com",
         "accounts.google.com", "accounts.youtube.com",
-        "googleusercontent.com", "gstatic.com"
+        "googleusercontent.com", "gstatic.com", "googleapis.com"
     )
 
     private val blockedDomainFragments = listOf(
@@ -33,23 +40,26 @@ class FocusWebViewManager(
         "googleadservices.com"
     )
 
+    // Origins for document-start JS injection (platform-specific)
+    private val documentStartOrigins: Set<String> get() = when (dest) {
+        NavDestination.INSTAGRAM_DM,
+        NavDestination.INSTAGRAM_HOME -> setOf("https://www.instagram.com", "https://instagram.com")
+        NavDestination.YOUTUBE_SUBS   -> setOf("https://www.youtube.com", "https://m.youtube.com")
+        NavDestination.DASHBOARD      -> emptySet()
+    }
+
     inner class Client : WebViewClient() {
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
-            // Inject early: the JS guard (window.__ff_ig_registered) prevents
-            // double-registration of MutationObserver and history patches on the
-            // subsequent onPageFinished call. This call gets CSS shielding in place
-            // before the browser paints any blocked elements.
+            // Fallback injection for devices where DOCUMENT_START_SCRIPT isn't supported
             view.evaluateJavascript(rulesJs, null)
             onUrlChanged(url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             super.onPageFinished(view, url)
-            // Second injection: the guard skips re-registration; only injectCSS(),
-            // sweepFeed()/sweepShorts(), and onNavigate() run again to catch any
-            // late-rendered elements that weren't present at page start.
+            // Second pass: guard in JS prevents double-registration of observers/patches
             view.evaluateJavascript(rulesJs, null)
         }
 
@@ -87,6 +97,13 @@ class FocusWebViewManager(
     }
 
     fun configure(webView: WebView) {
+        // Build UA from the device's actual WebView string, stripping the "; wv" marker.
+        // Instagram and YouTube detect "; wv" and serve a degraded / login-broken UI.
+        val baseUa = WebSettings.getDefaultUserAgent(context)
+        val cleanUa = baseUa
+            .replace("; wv", "")
+            .replace(Regex(" Version/[\\d.]+ "), " ")
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -99,20 +116,29 @@ class FocusWebViewManager(
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             allowFileAccess = false
             allowContentAccess = false
-            userAgentString = "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A.240805.005) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                "Chrome/128.0.6613.88 Mobile Safari/537.36"
+            mediaPlaybackRequiresUserGesture = false
+            userAgentString = cleanUa
         }
 
+        // Instagram login and session require cross-domain cookies (Meta CDN, fbcdn.net)
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
-            setAcceptThirdPartyCookies(webView, false)
+            setAcceptThirdPartyCookies(webView, true)
         }
 
         webView.webViewClient = Client()
         webView.webChromeClient = ChromeClient()
         webView.addJavascriptInterface(FocusFeedBridge(context), "FocusFeedBridge")
         webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null)
+
+        // addDocumentStartJavaScript runs before ANY page JS — the gold standard.
+        // The fallback onPageStarted + onPageFinished path above covers older WebViews.
+        val origins = documentStartOrigins
+        if (origins.isNotEmpty() &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+        ) {
+            WebViewCompat.addDocumentStartJavaScript(webView, rulesJs, origins)
+        }
     }
 
     fun flush() {

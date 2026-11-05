@@ -202,6 +202,35 @@
     window.addEventListener('popstate', function () { onNavigate(location.pathname); });
   }
 
+  /* ─── Click interception (belt-and-suspenders for CSS misses) ───────── */
+  function installClickGuard() {
+    document.addEventListener('click', function (e) {
+      var a = e.target && e.target.closest && e.target.closest('a[href]');
+      if (!a) return;
+      var href = a.getAttribute('href') || '';
+      var blocked =
+        href.startsWith('/reels') ||
+        href.indexOf('/reels/') !== -1 ||
+        (prefHideExplore() && href.startsWith('/explore'));
+      if (blocked) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    }, true);
+  }
+
+  /* ─── Polling fallback (catches navigations that bypass history patch) ─ */
+  var _lastPolledPath = '';
+  function startPolling() {
+    setInterval(function () {
+      var p = location.pathname;
+      if (p !== _lastPolledPath) {
+        _lastPolledPath = p;
+        onNavigate(p);
+      }
+    }, 400);
+  }
+
   /* ─── Boot ───────────────────────────────────────────────────────────── */
   injectCSS();
   sweepFeed();
@@ -210,6 +239,8 @@
   if (!_registered) {
     patchHistory();
     startObserver();
+    installClickGuard();
+    startPolling();
   }
 
   onNavigate(location.pathname);
