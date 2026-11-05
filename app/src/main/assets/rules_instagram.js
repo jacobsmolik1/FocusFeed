@@ -30,22 +30,19 @@
   /* ─── CSS shield ─────────────────────────────────────────────────────── */
   function buildCSS() {
     return (
+      /* URL-based nav hiding — most precise, zero false-positives */
       'a[href^="/reels"]                             { display: none !important; }\n' +
       'a[href*="/reels/"]                            { display: none !important; }\n' +
       (prefHideExplore()
         ? 'a[href^="/explore"]                       { display: none !important; }\n'
         : '') +
+      /* Aria-label based — reels buttons in nav */
       '[role="button"][aria-label*="Reel" i]         { display: none !important; }\n' +
-      '[data-bloks-name*="reel"]                     { display: none !important; }\n' +
-      '[data-bloks-name*="clips"]                    { display: none !important; }\n' +
-      '[data-bloks-name*="suggested_header"]         { display: none !important; }\n' +
-      'article:has([data-bloks-name*="suggested"])   { display: none !important; }\n' +
       /* Preserve DMs / Messages / Notifications / stories */
       'a[href^="/direct"]                            { display: unset !important; }\n' +
       '[aria-label="Messages" i]                     { display: unset !important; }\n' +
       '[aria-label="Notifications" i]                { display: unset !important; }\n' +
-      '[aria-label="Stories tray"]                   { display: unset !important; }\n' +
-      '[data-bloks-name*="stories_tray"]             { display: unset !important; }\n'
+      '[aria-label="Stories tray"]                   { display: unset !important; }\n'
     );
   }
 

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Message
+import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -57,13 +58,19 @@ class FocusWebViewManager(
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
+            Log.d("FF_NAV", "START: $url")
             if (!isLoginPage(url)) view.evaluateJavascript(rulesJs, null)
             onUrlChanged(url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             super.onPageFinished(view, url)
+            Log.d("FF_NAV", "FINISH: $url")
             if (!isLoginPage(url)) view.evaluateJavascript(rulesJs, null)
+        }
+
+        override fun onReceivedError(view: WebView, errorCode: Int, description: String, failingUrl: String) {
+            Log.e("FF_NAV", "ERROR $errorCode '$description' at $failingUrl")
         }
 
         private fun isLoginPage(url: String): Boolean {
@@ -94,8 +101,12 @@ class FocusWebViewManager(
             }
 
             val host = url.host ?: return true
-            if (isAllowedHost(host)) return false
+            if (isAllowedHost(host)) {
+                Log.d("FF_NAV", "ALLOW: $url")
+                return false
+            }
 
+            Log.w("FF_NAV", "BLOCK→BROWSER: $url")
             // External http/https link — open in system browser
             runCatching {
                 context.startActivity(
@@ -178,6 +189,7 @@ class FocusWebViewManager(
             allowFileAccess = false
             allowContentAccess = false
             mediaPlaybackRequiresUserGesture = false
+            setSupportMultipleWindows(true)
             userAgentString = cleanUa
         }
 

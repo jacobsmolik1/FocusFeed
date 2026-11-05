@@ -2,6 +2,9 @@ package com.focusfeed.app
 
 import android.content.Intent
 import android.provider.Settings
+import android.webkit.CookieManager
+import android.webkit.WebStorage
+import android.webkit.WebView
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.*
@@ -189,6 +192,38 @@ fun DashboardScreen(vm: FocusFeedViewModel) {
                 checked = strictDmOnly,
                 onCheckedChange = vm::setStrictDmOnly
             )
+        }
+
+        item { HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp)) }
+
+        item {
+            Text(
+                "Troubleshooting",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "If Instagram or YouTube shows a blank screen or login loop, clear the session.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        item {
+            var cleared by remember { mutableStateOf(false) }
+            OutlinedButton(
+                onClick = {
+                    CookieManager.getInstance().removeAllCookies(null)
+                    CookieManager.getInstance().flush()
+                    WebStorage.getInstance().deleteAllData()
+                    WebView(ctx).clearCache(true)
+                    cleared = true
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (cleared) "Session Cleared — restart app" else "Clear Session & Cookies")
+            }
         }
     }
 }
