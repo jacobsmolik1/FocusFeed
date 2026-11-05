@@ -6,79 +6,90 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 class FocusAccessibilityService : AccessibilityService() {
 
-    private var lastActionMs = 0L
-    private val COOLDOWN_MS = 500L
+    private var lastInterventionMs = 0L
+    private val COOLDOWN_MS = 800L
+
+    // Reels-related view ID fragments (Instagram)
+    private val igReelIds = listOf("reel_viewer", "clips_video_container", "clips_tab", "reels_tab")
+
+    // Shorts-related view ID fragments (YouTube)
+    private val ytShortsIds = listOf("shorts_container", "reel_recycler", "shorts_pivot_bar_item")
+
+    // Content-description labels to intercept (checked case-insensitively)
+    private val igReelLabels = listOf("reels", "reels tab")
+    private val ytShortsLabels = listOf("shorts", "youtube shorts")
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        if (!FocusPrefs.isAllowStories(this)) {
+            // If strict blocking is desired we also check stories — currently no-op since
+            // isAllowStories() defaults true; kept as extension point.
+        }
+
         val pkg = event.packageName?.toString() ?: return
+        val type = event.eventType
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            type != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) return
+
         val now = System.currentTimeMillis()
-        if (now - lastActionMs < COOLDOWN_MS) return
+        if (now - lastInterventionMs < COOLDOWN_MS) return
 
         when (pkg) {
-            "com.instagram.android" -> handleInstagram(event, now)
-            "com.google.android.youtube" -> handleYoutube(event, now)
+            "com.instagram.android" -> checkInstagram(now)
+            "com.google.android.youtube" -> checkYoutube(now)
         }
     }
 
-    private fun handleInstagram(event: AccessibilityEvent, now: Long) {
+    private fun checkInstagram(now: Long) {
         val root = rootInActiveWindow ?: return
-        // Find and hide the Reels tab (bottom nav, 3rd item on modern Instagram)
-        val acted = hideNodeByDescription(root, listOf("Reels", "Reels tab")) ||
-            hideNodeByResourceId(root, listOf(
-                "com.instagram.android:id/clips_tab",
-                "com.instagram.android:id/reels_tab"
-            ))
-        if (acted) lastActionMs = now
+        val blocked =
+            containsNodeById(root, igReelIds) ||
+            containsNodeByLabel(root, igReelLabels)
         root.recycle()
+        if (blocked) intervene(now, "instagram")
     }
 
-    private fun handleYoutube(event: AccessibilityEvent, now: Long) {
+    private fun checkYoutube(now: Long) {
         val root = rootInActiveWindow ?: return
-        val acted = hideNodeByDescription(root, listOf("Shorts", "YouTube Shorts")) ||
-            hideNodeByResourceId(root, listOf(
-                "com.google.android.youtube:id/shorts_pivot_bar_item",
-                "com.google.android.youtube:id/reel_pivot_bar_item"
-            ))
-        if (acted) lastActionMs = now
+        val blocked =
+            containsNodeById(root, ytShortsIds) ||
+            containsNodeByLabel(root, ytShortsLabels)
         root.recycle()
+        if (blocked) intervene(now, "youtube")
     }
 
-    private fun hideNodeByDescription(root: AccessibilityNodeInfo, labels: List<String>): Boolean {
-        var found = false
-        for (label in labels) {
-            val nodes = root.findAccessibilityNodeInfosByText(label)
-            for (node in nodes) {
-                // Click the node's parent container to navigate away if we landed on Reels/Shorts
-                val parent = node.parent
-                if (parent != null) {
-                    // We can't truly "hide" native views; instead navigate back
-                    performGlobalAction(GLOBAL_ACTION_BACK)
-                    parent.recycle()
-                    found = true
-                    break
-                }
-                node.recycle()
-            }
-            if (found) break
-        }
-        return found
+    private fun intervene(now: Long, platform: String) {
+        lastInterventionMs = now
+        FocusStats.recordBlock(this)
+        performGlobalAction(GLOBAL_ACTION_BACK)
     }
 
-    private fun hideNodeByResourceId(root: AccessibilityNodeInfo, ids: List<String>): Boolean {
-        for (id in ids) {
-            val nodes = root.findAccessibilityNodeInfosByViewId(id)
-            if (nodes.isNotEmpty()) {
-                // If a Reels/Shorts tab is focused/selected, go back to home
-                val selected = nodes.any { it.isSelected || it.isFocused }
-                nodes.forEach { it.recycle() }
-                if (selected) {
-                    performGlobalAction(GLOBAL_ACTION_BACK)
-                    return true
-                }
-            }
+    // Recursive DFS: check if any node's viewIdResourceName contains one of the fragments
+    private fun containsNodeById(node: AccessibilityNodeInfo, fragments: List<String>): Boolean {
+        val id = node.viewIdResourceName ?: ""
+        if (fragments.any { id.contains(it, ignoreCase = true) && nodeIsVisible(node) }) return true
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (containsNodeById(child, fragments)) { child.recycle(); return true }
+            child.recycle()
         }
         return false
     }
+
+    // Recursive DFS: check content-description labels
+    private fun containsNodeByLabel(node: AccessibilityNodeInfo, labels: List<String>): Boolean {
+        val desc = node.contentDescription?.toString()?.trim()?.lowercase() ?: ""
+        if (desc.isNotEmpty() && labels.any { desc == it || desc.startsWith("$it ") } && nodeIsVisible(node)) return true
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (containsNodeByLabel(child, labels)) { child.recycle(); return true }
+            child.recycle()
+        }
+        return false
+    }
+
+    // Only trigger on nodes that are actually on-screen
+    private fun nodeIsVisible(node: AccessibilityNodeInfo): Boolean =
+        node.isVisibleToUser
 
     override fun onInterrupt() {}
 }

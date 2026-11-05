@@ -27,15 +27,17 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun FocusFeedApp(vm: FocusFeedViewModel) {
+    val ctx = LocalContext.current
     val currentDest by vm.currentDest.collectAsState()
-    val context = LocalContext.current
 
-    val injectionScripts = remember {
+    // Load rules JS once; keyed so they reload if assets change between launches
+    val scripts = remember {
+        val load: (String) -> String = { name ->
+            ctx.assets.open(name).bufferedReader().readText()
+        }
         mapOf(
-            "injection_instagram.js" to context.assets.open("injection_instagram.js")
-                .bufferedReader().readText(),
-            "injection_youtube.js" to context.assets.open("injection_youtube.js")
-                .bufferedReader().readText()
+            "rules_instagram.js" to load("rules_instagram.js"),
+            "rules_youtube.js" to load("rules_youtube.js")
         )
     }
 
@@ -46,29 +48,36 @@ private fun FocusFeedApp(vm: FocusFeedViewModel) {
                     NavigationBarItem(
                         selected = currentDest == dest,
                         onClick = { vm.onTabSelected(dest) },
-                        icon = {
-                            Icon(
-                                painter = androidx.compose.ui.res.painterResource(dest.iconRes),
-                                contentDescription = dest.label
-                            )
-                        },
+                        icon = { Icon(dest.icon, contentDescription = dest.label) },
                         label = { Text(dest.label) }
                     )
                 }
             }
         }
     ) { innerPadding ->
-        Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-            // key() forces a fresh WebView only when the destination changes,
-            // so the WebView isn't recreated on recompose within the same tab.
-            key(currentDest) {
-                val js = injectionScripts[currentDest.injectionAsset()] ?: ""
-                WebContainerScreen(
-                    dest = currentDest,
-                    startUrl = vm.currentUrl(),
-                    injectionJs = js,
-                    onUrlChanged = { url -> vm.onPageChanged(currentDest, url) }
-                )
+        Box(
+            modifier = Modifier
+                .padding(innerPadding)
+                .fillMaxSize()
+        ) {
+            if (currentDest == NavDestination.DASHBOARD) {
+                DashboardScreen(vm)
+            } else {
+                // key() recreates the WebView only when the tab changes,
+                // preserving in-tab navigation history within the same session.
+                key(currentDest) {
+                    val rulesJs = scripts[currentDest.rulesAsset()] ?: ""
+                    // CSS-only pre-injection: extracts the injectCSS() call from the rules file
+                    val cssJs = "if(typeof injectCSS==='function')injectCSS();"
+                    WebContainerScreen(
+                        dest = currentDest,
+                        startUrl = vm.currentUrl(),
+                        cssJs = cssJs,
+                        rulesJs = rulesJs,
+                        modifier = Modifier.fillMaxSize(),
+                        onUrlChanged = { url -> vm.onPageChanged(currentDest, url) }
+                    )
+                }
             }
         }
     }
