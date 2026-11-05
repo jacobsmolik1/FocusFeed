@@ -22,20 +22,23 @@ class FocusWebViewManager(
     private val onUrlChanged: (String) -> Unit
 ) {
 
-    private val allowedHosts = setOf(
+    // Suffix-based: any subdomain of these base domains is allowed in-WebView.
+    // This covers accounts.instagram.com, scontent-*.cdninstagram.com, etc.
+    private val allowedBaseDomains = setOf(
         // Instagram / Meta
-        "instagram.com", "www.instagram.com", "i.instagram.com",
-        "api.instagram.com", "graph.instagram.com",
-        "cdninstagram.com", "fbcdn.net",
-        "facebook.com", "www.facebook.com", "accounts.facebook.com",
-        "m.facebook.com", "connect.facebook.net",
-        "meta.com", "www.meta.com",
+        "instagram.com", "cdninstagram.com", "fbcdn.net",
+        "facebook.com", "facebook.net", "fbsbx.com",
+        "meta.com",
         // YouTube / Google
-        "youtube.com", "www.youtube.com", "m.youtube.com",
-        "youtu.be", "yt3.ggpht.com", "ytimg.com", "i.ytimg.com",
-        "accounts.google.com", "accounts.youtube.com",
-        "googleusercontent.com", "gstatic.com", "googleapis.com"
+        "youtube.com", "youtu.be",
+        "ggpht.com", "ytimg.com",
+        "google.com", "googleusercontent.com", "gstatic.com", "googleapis.com"
     )
+
+    private fun isAllowedHost(host: String): Boolean {
+        val h = host.removePrefix("www.")
+        return allowedBaseDomains.any { base -> h == base || h.endsWith(".$base") }
+    }
 
     private val blockedDomainFragments = listOf(
         "analytics.google.com",
@@ -54,13 +57,21 @@ class FocusWebViewManager(
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
-            view.evaluateJavascript(rulesJs, null)
+            if (!isLoginPage(url)) view.evaluateJavascript(rulesJs, null)
             onUrlChanged(url)
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             super.onPageFinished(view, url)
-            view.evaluateJavascript(rulesJs, null)
+            if (!isLoginPage(url)) view.evaluateJavascript(rulesJs, null)
+        }
+
+        private fun isLoginPage(url: String): Boolean {
+            val lower = url.lowercase()
+            return lower.contains("/accounts/login") ||
+                   lower.contains("/accounts/emailsignup") ||
+                   lower.contains("/accounts/signup") ||
+                   lower.contains("accounts.instagram.com")
         }
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -82,8 +93,8 @@ class FocusWebViewManager(
                 return true
             }
 
-            val host = url.host?.removePrefix("www.") ?: return true
-            if (allowedHosts.any { it.removePrefix("www.") == host }) return false
+            val host = url.host ?: return true
+            if (isAllowedHost(host)) return false
 
             // External http/https link — open in system browser
             runCatching {
