@@ -61,6 +61,7 @@ class FocusWebViewManager(
     private var pageReady = false
     private var loggedInjectUrl: String? = null
     private var lastDecision: String? = null
+    private var lastMainFrameError: String? = null
     private var blankToken = 0
 
     private val poll = Runnable { pollInject() }
@@ -96,8 +97,16 @@ class FocusWebViewManager(
         instagramSession = hasInstagramSession()
     )
 
+    /** Host and path only. Query strings can carry auth redirects; never log them. */
+    private fun publicUrl(url: String): String {
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return "url"
+        val host = uri.host ?: return "url"
+        val path = uri.path?.take(80) ?: "/"
+        return "$host$path"
+    }
+
     private fun publish(url: String, decision: String, extra: String) {
-        val line = "$decision · $extra · $url"
+        val line = "$decision · $extra · ${publicUrl(url)}"
         Log.i("FF_NAV", "DECISION $line")
         Log.i("FF_BLANK", line)
         if (lastDecision == line) return
@@ -108,9 +117,7 @@ class FocusWebViewManager(
     private fun maybeInject(view: WebView) {
         val url = view.url ?: return
         val decision = decide(url)
-        val height = view.contentHeight
-        val title = view.title ?: ""
-        publish(url, decision, "h=$height title=${title.take(40)}")
+        Log.i("FF_NAV", "CHECK $decision h=${view.contentHeight} ${publicUrl(url)}")
         if (decision != WebInjectionGate.INJECT) {
             loggedInjectUrl = null
             return
@@ -119,7 +126,7 @@ class FocusWebViewManager(
         // the blocker only after the password form is gone.
         if (loggedInjectUrl != url) {
             loggedInjectUrl = url
-            Log.i("FF_NAV", "INJECT $url")
+            Log.i("FF_NAV", "INJECT ${publicUrl(url)}")
         }
         view.evaluateJavascript(rulesJs, null)
     }
@@ -130,23 +137,33 @@ class FocusWebViewManager(
         handler.postDelayed(poll, 2000)
     }
 
-    private fun scheduleBlankCheck(view: WebView) {
-        val token = ++blankToken
-        val url = view.url ?: return
+    private fun schedulePaintProbe(view: WebView) {
+        val token = blankToken
         handler.postDelayed({
             if (token != blankToken) return@postDelayed
             val live = mainWebView ?: return@postDelayed
             if (live !== view) return@postDelayed
-            maybeInject(live)
-            val height = live.contentHeight
-            val decision = decide(live.url ?: url)
-            if (height in 0..40) {
-                val line = "$decision · BLANK h=$height title=${live.title ?: ""} · ${live.url}"
-                Log.i("FF_BLANK", line)
-                lastDecision = null
-                publish(live.url ?: url, decision, "BLANK h=$height title=${(live.title ?: "").take(40)}")
-            }
-        }, 2000)
+            runProbe(live, token)
+        }, 3000)
+        handler.postDelayed({
+            if (token != blankToken) return@postDelayed
+            val live = mainWebView ?: return@postDelayed
+            if (live !== view) return@postDelayed
+            runProbe(live, token)
+        }, 8000)
+    }
+
+    private fun runProbe(live: WebView, token: Int) {
+        live.evaluateJavascript(PagePaintProbe.JS) { raw ->
+            if (token != blankToken || mainWebView !== live) return@evaluateJavascript
+            val summary = PagePaintProbe.summarize(raw)
+            val painted = PagePaintProbe.looksPainted(raw)
+            val url = live.url ?: return@evaluateJavascript
+            val decision = lastMainFrameError ?: decide(url)
+            val mark = if (painted) "paint=ok" else "paint=empty"
+            lastDecision = null
+            publish(url, decision, "$mark · $summary")
+        }
     }
 
     private fun emptyResponse(): WebResourceResponse =
@@ -223,8 +240,9 @@ class FocusWebViewManager(
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
             pageReady = false
+            lastMainFrameError = null
             blankToken++
-            Log.i("FF_NAV", "START $url decision=${decide(url)} (script withheld until finish)")
+            Log.i("FF_NAV", "START ${publicUrl(url)} decision=${decide(url)} (script withheld until finish)")
             onUrlChanged(url)
             publish(url, decide(url), "loading")
         }
@@ -233,9 +251,9 @@ class FocusWebViewManager(
             super.onPageFinished(view, url)
             pageReady = true
             flushCookiesAsync()
-            Log.i("FF_NAV", "FINISH $url title=${view.title} h=${view.contentHeight}")
+            Log.i("FF_NAV", "FINISH ${publicUrl(url)} title=${view.title?.take(40)} h=${view.contentHeight}")
             maybeInject(view)
-            scheduleBlankCheck(view)
+            schedulePaintProbe(view)
         }
 
         override fun onReceivedError(
@@ -244,10 +262,10 @@ class FocusWebViewManager(
             error: android.webkit.WebResourceError
         ) {
             if (!request.isForMainFrame) return
-            val line = "network-error ${error.errorCode} ${error.description} ${request.url}"
-            Log.e("FF_BLANK", line)
+            lastMainFrameError = "network-error"
+            Log.e("FF_BLANK", "network-error ${error.errorCode} ${publicUrl(request.url.toString())}")
             lastDecision = null
-            publish(request.url.toString(), "network-error", error.description?.toString() ?: "error")
+            publish(request.url.toString(), "network-error", "code=${error.errorCode}")
         }
 
         override fun onReceivedHttpError(
@@ -256,7 +274,8 @@ class FocusWebViewManager(
             errorResponse: WebResourceResponse
         ) {
             if (!request.isForMainFrame) return
-            Log.e("FF_BLANK", "HTTP ${errorResponse.statusCode} ${request.url}")
+            lastMainFrameError = "http-${errorResponse.statusCode}"
+            Log.e("FF_BLANK", "HTTP ${errorResponse.statusCode} ${publicUrl(request.url.toString())}")
             lastDecision = null
             publish(request.url.toString(), "http-${errorResponse.statusCode}", "main frame")
         }

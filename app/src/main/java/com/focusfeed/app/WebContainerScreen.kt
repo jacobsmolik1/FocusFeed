@@ -3,6 +3,7 @@ package com.focusfeed.app
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.webkit.WebView
@@ -40,8 +41,12 @@ fun WebContainerScreen(
     val latestUrl = remember(dest) { mutableStateOf(startUrl) }
     val crashGate = remember { CrashGate() }
     val diagLine = diag
-    val showDiag = diagLine != null &&
-        (!diagLine.startsWith("inject ") || diagLine.contains("BLANK"))
+    val showDiag = diagLine != null && (
+        diagLine.contains("paint=empty") ||
+        diagLine.contains("ffCss=true") ||
+        diagLine.startsWith("network-error") ||
+        diagLine.startsWith("http-")
+    )
 
     BackHandler(enabled = webViewRef?.canGoBack() == true) {
         webViewRef?.goBack()
@@ -74,6 +79,15 @@ fun WebContainerScreen(
                         }
                     )
                     WebView(ctx).also { wv ->
+                        // Measured in the emulator: the same WebViewClient paints the
+                        // login form as an activity content view, and stays
+                        // white inside Compose until the WebView has
+                        // MATCH_PARENT layout params. Instagram's shell uses
+                        // percentage heights, which do not resolve otherwise.
+                        wv.layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
                         attachedManagers[wv] = manager
                         manager.configure(wv)
                         webViewRef = wv
