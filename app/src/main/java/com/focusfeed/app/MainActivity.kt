@@ -1,6 +1,8 @@
 package com.focusfeed.app
 
 import android.os.Bundle
+import android.webkit.CookieManager
+import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -17,11 +19,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Before the first WebView. Instagram drops the session if this is off.
+        CookieManager.getInstance().setAcceptCookie(true)
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
         setContent {
             FocusFeedTheme {
                 FocusFeedApp(vm)
             }
         }
+    }
+
+    override fun onPause() {
+        // Login cookies are kept in memory until flush. Without this, a tab
+        // switch or backgrounding returns the user to a logged-out blank wall.
+        FocusWebViewManager.flushCookiesAsync()
+        super.onPause()
     }
 }
 
