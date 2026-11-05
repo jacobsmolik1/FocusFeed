@@ -214,10 +214,14 @@ fun DashboardScreen(vm: FocusFeedViewModel) {
             var cleared by remember { mutableStateOf(false) }
             OutlinedButton(
                 onClick = {
-                    CookieManager.getInstance().removeAllCookies(null)
-                    CookieManager.getInstance().flush()
+                    CookieManager.getInstance().removeAllCookies {
+                        FocusWebViewManager.flushCookiesAsync()
+                    }
                     WebStorage.getInstance().deleteAllData()
-                    WebView(ctx).clearCache(true)
+                    WebView(ctx).apply {
+                        clearCache(true)
+                        destroy()
+                    }
                     cleared = true
                 },
                 modifier = Modifier.fillMaxWidth()
