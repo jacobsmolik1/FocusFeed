@@ -95,6 +95,16 @@ class WebInjectionGateTest {
     }
 
     @Test
+    fun paintProbe_countsControls_withoutReadingText() {
+        val raw = """{"textChars":83,"visInputs":2,"inputs":2,"visButtons":4,"bodyH":842,"innerH":842,"innerW":412,"sheets":4,"ffCss":false,"bodyBg":"rgb(255, 255, 255)"}"""
+        val line = PagePaintProbe.summarize(raw)
+        assertEquals(true, PagePaintProbe.looksPainted(raw))
+        assertEquals(true, line.contains("in=2/2"))
+        assertEquals(false, line.contains("Username"))
+        assertEquals(false, PagePaintProbe.looksPainted("""{"textChars":9,"visInputs":0,"visButtons":0}"""))
+    }
+
+    @Test
     fun youtubeSubscriptions_stillInject() {
         assertEquals(
             WebInjectionGate.INJECT,
