@@ -8,6 +8,7 @@ object FocusPrefs {
     private const val KEY_ALLOW_STORIES = "allow_stories"
     private const val KEY_STRICT_DM_ONLY = "strict_dm_only"
     private const val KEY_HIDE_EXPLORE = "hide_explore"
+    private const val KEY_INJECTION_DISABLED = "injection_disabled"
 
     fun isAllowStories(ctx: Context): Boolean = get(ctx, KEY_ALLOW_STORIES, true)
     fun setAllowStories(ctx: Context, v: Boolean) = set(ctx, KEY_ALLOW_STORIES, v)
@@ -17,6 +18,10 @@ object FocusPrefs {
 
     fun isHideExplore(ctx: Context): Boolean = get(ctx, KEY_HIDE_EXPLORE, true)
     fun setHideExplore(ctx: Context, v: Boolean) = set(ctx, KEY_HIDE_EXPLORE, v)
+
+    /** Plain WebView. Default off so blocking still runs after login. */
+    fun isInjectionDisabled(ctx: Context): Boolean = get(ctx, KEY_INJECTION_DISABLED, false)
+    fun setInjectionDisabled(ctx: Context, v: Boolean) = set(ctx, KEY_INJECTION_DISABLED, v)
 
     private fun get(ctx: Context, key: String, default: Boolean): Boolean =
         ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

@@ -192,8 +192,51 @@ const bridge = {
   assert(w.location.href.includes('/accounts/login'), 'strict mode does not bounce the login page');
   assert(w.getComputedStyle(w.document.getElementById('promo')).display !== 'none', 'login promo article is not swept');
   assert(w.getComputedStyle(w.document.getElementById('formcopy')).display !== 'none', 'login copy stays visible');
-  const style = w.document.getElementById('focusfeed-css');
-  assert(!style || style.textContent.trim() === '', 'login page does not keep shield CSS');
+  assert(w.getComputedStyle(w.document.querySelector('#promo a')).display !== 'none', 'login reels link is not hidden');
+  assert(!w.document.getElementById('focusfeed-css'), 'login installs no stylesheet');
+  assert(!w.__ff_ig_tick, 'login does not install the blocker');
+  assert(!w.__ff_ig_obs, 'login does not install a mutation observer');
+  w.close();
+}
+
+{
+  const { w } = boot(
+    'https://www.instagram.com/challenge/',
+    `<form id="checkpoint"><p>Confirm it's you</p></form>`,
+    igSrc,
+    { ...bridge, isStrictDmOnly: () => true }
+  );
+  assert(!w.__ff_ig_tick, 'checkpoint installs no blocker');
+  assert(!w.__ff_nav, 'checkpoint is not redirected');
+  assert(w.location.pathname === '/challenge/', 'checkpoint url stays');
+  w.close();
+}
+
+{
+  const { w } = boot(
+    'https://www.instagram.com/',
+    `
+      <input name="username">
+      <input type="password" name="password">
+      <article id="reelcard"><a href="/reel/AbC123/">reel</a></article>
+    `,
+    igSrc,
+    bridge
+  );
+  assert(!w.__ff_ig_tick, 'visible login form on home installs no blocker');
+  assert(w.getComputedStyle(w.document.getElementById('reelcard')).display !== 'none', 'visible login form does not hide the page');
+  w.close();
+}
+
+{
+  const { w } = boot(
+    'https://www.instagram.com/',
+    `<article id="reelcard"><a href="/reel/AbC123/">reel</a></article>`,
+    igSrc,
+    { ...bridge, isInjectionDisabled: () => true }
+  );
+  assert(!w.__ff_ig_tick, 'kill switch installs no blocker');
+  assert(w.getComputedStyle(w.document.getElementById('reelcard')).display !== 'none', 'kill switch does not hide reels via css');
   w.close();
 }
 

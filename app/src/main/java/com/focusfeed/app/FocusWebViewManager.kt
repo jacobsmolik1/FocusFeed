@@ -1,15 +1,13 @@
 package com.focusfeed.app
 
-import android.app.Activity
-import android.app.Dialog
 import android.content.Context
-import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.Message
 import android.util.Log
-import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
@@ -22,28 +20,32 @@ import android.webkit.WebViewClient
 import java.io.ByteArrayInputStream
 import java.util.concurrent.Executors
 
+/**
+ * One WebView, no popup window, no script until Instagram auth is finished.
+ *
+ * onPageStarted does not call evaluateJavascript. Doing that on
+ * www.instagram.com/accounts/login (the previous build did) runs the blocker
+ * before the login document exists and leaves a white page. window.open is
+ * ignored so an OAuth popup cannot replace this view with about:blank.
+ */
 class FocusWebViewManager(
     private val context: Context,
     private val dest: NavDestination,
     private val rulesJs: String,
     private val onUrlChanged: (String) -> Unit,
-    private val onRendererGone: () -> Unit = {}
+    private val onRendererGone: () -> Unit = {},
+    private val onDiag: (String) -> Unit = {}
 ) {
 
-    // Suffix-based: any subdomain of these base domains is allowed in-WebView.
-    // This covers accounts.instagram.com, scontent-*.cdninstagram.com, OAuth, reCAPTCHA.
     private val allowedBaseDomains = setOf(
-        // Instagram / Meta
         "instagram.com", "cdninstagram.com", "fbcdn.net",
         "facebook.com", "facebook.net", "fb.com", "fbsbx.com",
         "messenger.com",
         "meta.com", "threads.net",
-        // YouTube / Google
         "youtube.com", "youtu.be", "youtube-nocookie.com",
         "ggpht.com", "ytimg.com", "googlevideo.com",
         "google.com", "googleusercontent.com", "gstatic.com", "googleapis.com",
         "recaptcha.net",
-        // Sign in with Apple (Instagram offers it on the web login)
         "apple.com"
     )
 
@@ -53,68 +55,98 @@ class FocusWebViewManager(
         "googleadservices.com"
     )
 
+    private val handler = Handler(Looper.getMainLooper())
     private var cleanedUserAgent: String? = null
     private var mainWebView: WebView? = null
-    private var activeDialog: Dialog? = null
-    private var activePopup: WebView? = null
-    private var authFlowStarted = false
-    private var handedOff = false
-    private var popupVisible = false
+    private var pageReady = false
+    private var loggedInjectUrl: String? = null
+    private var lastDecision: String? = null
+    private var blankToken = 0
 
-    private fun normalizedHost(host: String): String =
-        host.lowercase().removePrefix("www.")
+    private val poll = Runnable { pollInject() }
 
-    private fun matchesBase(host: String, base: String): Boolean {
-        val h = normalizedHost(host)
-        return h == base || h.endsWith(".$base")
+    private fun platform(): WebPlatform = when (dest) {
+        NavDestination.INSTAGRAM_DM, NavDestination.INSTAGRAM_HOME -> WebPlatform.INSTAGRAM
+        NavDestination.YOUTUBE_SUBS -> WebPlatform.YOUTUBE
+        NavDestination.DASHBOARD -> WebPlatform.NONE
     }
+
+    private fun hostMatches(host: String, base: String): Boolean =
+        WebInjectionGate.hostMatches(host, base)
 
     private fun isAllowedHost(host: String): Boolean =
-        allowedBaseDomains.any { base -> matchesBase(host, base) }
+        allowedBaseDomains.any { base -> hostMatches(host, base) }
 
-    private fun isInstagramHost(host: String): Boolean = matchesBase(host, "instagram.com")
-
-    private fun isYouTubeHost(host: String): Boolean =
-        matchesBase(host, "youtube.com") || matchesBase(host, "youtu.be")
-
-    /** Product pages we inject rules into. OAuth and consent hosts are excluded. */
-    private fun shouldInjectRules(url: String): Boolean {
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
-        val scheme = uri.scheme?.lowercase() ?: return false
-        if (scheme != "https" && scheme != "http") return false
-        val host = uri.host?.lowercase() ?: return false
-        val bare = normalizedHost(host)
-        if (bare.startsWith("accounts.") || bare.startsWith("consent.")) return false
-        return when (dest) {
-            NavDestination.INSTAGRAM_DM,
-            NavDestination.INSTAGRAM_HOME -> isInstagramHost(host)
-            NavDestination.YOUTUBE_SUBS -> isYouTubeHost(host)
-            NavDestination.DASHBOARD -> false
+    private fun hasInstagramSession(): Boolean {
+        val jar = CookieManager.getInstance().getCookie("https://www.instagram.com")
+            ?: CookieManager.getInstance().getCookie("https://instagram.com")
+            ?: return false
+        return jar.split(';').any { part ->
+            val token = part.trim()
+            if (!token.startsWith("sessionid=")) return@any false
+            val value = token.substringAfter("sessionid=").trim().trim('"')
+            value.isNotEmpty() && value != "deleted"
         }
     }
 
-    private fun isProductHost(host: String): Boolean = when (dest) {
-        NavDestination.INSTAGRAM_DM,
-        NavDestination.INSTAGRAM_HOME -> isInstagramHost(host)
-        NavDestination.YOUTUBE_SUBS -> isYouTubeHost(host)
-        NavDestination.DASHBOARD -> false
+    private fun decide(url: String): String = WebInjectionGate.decide(
+        url = url,
+        platform = platform(),
+        injectionDisabled = FocusPrefs.isInjectionDisabled(context),
+        instagramSession = hasInstagramSession()
+    )
+
+    private fun publish(url: String, decision: String, extra: String) {
+        val line = "$decision · $extra · $url"
+        Log.i("FF_NAV", "DECISION $line")
+        Log.i("FF_BLANK", line)
+        if (lastDecision == line) return
+        lastDecision = line
+        onDiag(line)
     }
 
-    private fun isAuthProviderHost(host: String): Boolean {
-        val bases = listOf(
-            "facebook.com", "fb.com", "facebook.net", "messenger.com",
-            "google.com", "recaptcha.net", "apple.com", "meta.com"
-        )
-        return bases.any { matchesBase(host, it) }
-    }
-
-    private fun findActivity(ctx: Context): Activity? {
-        var current: Context? = ctx
-        while (current is ContextWrapper) {
-            if (current is Activity) return current
-            current = current.baseContext
+    private fun maybeInject(view: WebView) {
+        val url = view.url ?: return
+        val decision = decide(url)
+        val height = view.contentHeight
+        val title = view.title ?: ""
+        publish(url, decision, "h=$height title=${title.take(40)}")
+        if (decision != WebInjectionGate.INJECT) {
+            loggedInjectUrl = null
+            return
         }
-        return null
+        // Re-run is idempotent. Repeating it lets a login wall on "/" pick up
+        // the blocker only after the password form is gone.
+        if (loggedInjectUrl != url) {
+            loggedInjectUrl = url
+            Log.i("FF_NAV", "INJECT $url")
+        }
+        view.evaluateJavascript(rulesJs, null)
+    }
+
+    private fun pollInject() {
+        val view = mainWebView ?: return
+        if (pageReady) maybeInject(view)
+        handler.postDelayed(poll, 2000)
+    }
+
+    private fun scheduleBlankCheck(view: WebView) {
+        val token = ++blankToken
+        val url = view.url ?: return
+        handler.postDelayed({
+            if (token != blankToken) return@postDelayed
+            val live = mainWebView ?: return@postDelayed
+            if (live !== view) return@postDelayed
+            maybeInject(live)
+            val height = live.contentHeight
+            val decision = decide(live.url ?: url)
+            if (height in 0..40) {
+                val line = "$decision · BLANK h=$height title=${live.title ?: ""} · ${live.url}"
+                Log.i("FF_BLANK", line)
+                lastDecision = null
+                publish(live.url ?: url, decision, "BLANK h=$height title=${(live.title ?: "").take(40)}")
+            }
+        }, 2000)
     }
 
     private fun emptyResponse(): WebResourceResponse =
@@ -128,11 +160,6 @@ class FocusWebViewManager(
         return null
     }
 
-    /**
-     * intent:// used to be handed to the system, which opens the official
-     * Instagram/YouTube app and abandons the WebView (the page behind it looks
-     * blank when the user returns). Keep http(s) fallbacks inside the WebView.
-     */
     private fun handleIntentUri(view: WebView, raw: String) {
         runCatching {
             val intent = Intent.parseUri(raw, Intent.URI_INTENT_SCHEME)
@@ -140,22 +167,22 @@ class FocusWebViewManager(
             val candidate = listOfNotNull(fallback, intent.dataString).firstOrNull {
                 it.startsWith("https://") || it.startsWith("http://")
             } ?: run {
-                Log.d("FF_NAV", "INTENT consumed (no http fallback)")
+                Log.i("FF_NAV", "INTENT consumed (no http fallback)")
                 return
             }
             val host = Uri.parse(candidate).host
             if (host != null && isAllowedHost(host)) {
-                Log.d("FF_NAV", "INTENT→WEBVIEW $candidate")
+                Log.i("FF_NAV", "INTENT→WEBVIEW $candidate")
                 view.loadUrl(candidate)
             } else {
-                Log.d("FF_NAV", "INTENT consumed (external app suppressed) $candidate")
+                Log.i("FF_NAV", "INTENT consumed (external app suppressed) $candidate")
             }
         }.onFailure {
             Log.w("FF_NAV", "INTENT parse failed: $raw")
         }
     }
 
-    private fun applyCommonSettings(webView: WebView) {
+    private fun applySettings(webView: WebView) {
         val ua = cleanedUserAgent ?: WebSettings.getDefaultUserAgent(context)
             .replace("; wv", "")
             .replace(Regex(" Version/[\\d.]+ "), " ")
@@ -174,8 +201,10 @@ class FocusWebViewManager(
             allowFileAccess = false
             allowContentAccess = false
             mediaPlaybackRequiresUserGesture = false
-            javaScriptCanOpenWindowsAutomatically = true
-            setSupportMultipleWindows(true)
+            // Popups were stealing Instagram login into a second WebView and
+            // leaving this one white. Same-tab navigation only.
+            javaScriptCanOpenWindowsAutomatically = false
+            setSupportMultipleWindows(false)
             userAgentString = ua
         }
         CookieManager.getInstance().apply {
@@ -184,67 +213,29 @@ class FocusWebViewManager(
         }
     }
 
-    private fun dismissPopup(reloadAfterAuth: Boolean) {
-        val dialog = activeDialog
-        val popup = activePopup
-        val reload = reloadAfterAuth && authFlowStarted && !handedOff
-        activeDialog = null
-        activePopup = null
-        if (reload) handedOff = true
-        if (popup != null) {
-            popup.webChromeClient = null
-            runCatching { popup.stopLoading() }
-        }
-        if (dialog != null) {
-            dialog.setOnDismissListener(null)
-            runCatching { if (dialog.isShowing) dialog.dismiss() }
-        }
-        if (popup != null) {
-            runCatching { popup.destroy() }
-        }
-        if (reload) {
-            flushCookiesAsync()
-            mainWebView?.reload()
-        }
-    }
-
-    private fun handOffToMain(url: String) {
-        if (handedOff) return
-        handedOff = true
-        val main = mainWebView ?: return
-        main.post {
-            flushCookiesAsync()
-            dismissPopup(reloadAfterAuth = false)
-            main.loadUrl(url)
-        }
-    }
-
-    /** Close any OAuth dialog. Safe to call more than once. */
     fun release() {
-        handedOff = true
-        dismissPopup(reloadAfterAuth = false)
+        handler.removeCallbacksAndMessages(null)
+        mainWebView = null
     }
 
     inner class Client : WebViewClient() {
 
         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
             super.onPageStarted(view, url, favicon)
-            Log.d("FF_NAV", "START: $url")
-            if (shouldInjectRules(url)) {
-                view.evaluateJavascript(rulesJs, null)
-            } else {
-                Log.d("FF_NAV", "SKIP_INJECT $url")
-            }
+            pageReady = false
+            blankToken++
+            Log.i("FF_NAV", "START $url decision=${decide(url)} (script withheld until finish)")
             onUrlChanged(url)
+            publish(url, decide(url), "loading")
         }
 
         override fun onPageFinished(view: WebView, url: String) {
             super.onPageFinished(view, url)
-            Log.d("FF_NAV", "FINISH: $url")
+            pageReady = true
             flushCookiesAsync()
-            if (shouldInjectRules(url)) {
-                view.evaluateJavascript(rulesJs, null)
-            }
+            Log.i("FF_NAV", "FINISH $url title=${view.title} h=${view.contentHeight}")
+            maybeInject(view)
+            scheduleBlankCheck(view)
         }
 
         override fun onReceivedError(
@@ -253,45 +244,52 @@ class FocusWebViewManager(
             error: android.webkit.WebResourceError
         ) {
             if (!request.isForMainFrame) return
-            Log.e("FF_NAV", "ERROR ${error.errorCode} '${error.description}' at ${request.url}")
+            val line = "network-error ${error.errorCode} ${error.description} ${request.url}"
+            Log.e("FF_BLANK", line)
+            lastDecision = null
+            publish(request.url.toString(), "network-error", error.description?.toString() ?: "error")
+        }
+
+        override fun onReceivedHttpError(
+            view: WebView,
+            request: WebResourceRequest,
+            errorResponse: WebResourceResponse
+        ) {
+            if (!request.isForMainFrame) return
+            Log.e("FF_BLANK", "HTTP ${errorResponse.statusCode} ${request.url}")
+            lastDecision = null
+            publish(request.url.toString(), "http-${errorResponse.statusCode}", "main frame")
         }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-            Log.e("FF_NAV", "renderer gone crashed=${detail.didCrash()}")
+            Log.e("FF_BLANK", "renderer gone crashed=${detail.didCrash()}")
             onRendererGone()
             return true
         }
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            // Subframes (reCAPTCHA, video, CDN) must not be bounced to the system browser.
             if (!request.isForMainFrame) {
-                val scheme = request.url.scheme?.lowercase() ?: return true
+                val scheme = request.url?.scheme?.lowercase() ?: return true
                 return scheme != "https" && scheme != "http" &&
                     scheme != "about" && scheme != "blob" && scheme != "data"
             }
 
             val url = request.url ?: return true
             val scheme = url.scheme?.lowercase() ?: return true
-
             if (scheme == "intent") {
                 handleIntentUri(view, url.toString())
                 return true
             }
-
-            // Only allow WebView to navigate http/https — everything else must be
-            // blocked so WebView does not throw on market://, fb://, etc.
             if (scheme != "https" && scheme != "http") {
-                Log.d("FF_NAV", "BLOCK SCHEME $url")
+                Log.i("FF_NAV", "BLOCK SCHEME $url")
                 return true
             }
-
             val host = url.host ?: return true
             if (isAllowedHost(host)) {
-                Log.d("FF_NAV", "ALLOW: $url")
+                Log.i("FF_NAV", "ALLOW $url")
                 return false
             }
-
-            Log.w("FF_NAV", "BLOCK→BROWSER: $url")
+            Log.w("FF_NAV", "BLOCK→BROWSER $url")
             runCatching {
                 context.startActivity(
                     Intent(Intent.ACTION_VIEW, url).apply {
@@ -309,144 +307,44 @@ class FocusWebViewManager(
     }
 
     inner class ChromeClient : WebChromeClient() {
-
         override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
             if (msg.messageLevel() == ConsoleMessage.MessageLevel.ERROR ||
-                msg.messageLevel() == ConsoleMessage.MessageLevel.WARNING) {
+                msg.messageLevel() == ConsoleMessage.MessageLevel.WARNING
+            ) {
                 Log.w("FF_JS", "[${msg.messageLevel()}] ${msg.message()} (${msg.sourceId()}:${msg.lineNumber()})")
             }
             return true
         }
 
-        override fun onCloseWindow(window: WebView) {
-            if (window == activePopup) {
-                val reload = authFlowStarted && !handedOff
-                mainWebView?.post { dismissPopup(reloadAfterAuth = reload) }
-            } else {
-                runCatching { window.destroy() }
-            }
-        }
-
-        // Instagram Facebook login and YouTube Google login call window.open().
-        // The first URL is often about:blank. Loading that into the opener blanks
-        // the WebView, and destroying the popup immediately drops the OAuth page.
         override fun onCreateWindow(
             view: WebView,
             isDialog: Boolean,
             isUserGesture: Boolean,
             resultMsg: Message
         ): Boolean {
-            dismissPopup(reloadAfterAuth = false)
-            authFlowStarted = false
-            handedOff = false
-            popupVisible = false
-
-            val activity = findActivity(context)
-            val popup = WebView(activity ?: context)
-            applyCommonSettings(popup)
-            popup.webViewClient = PopupClient()
-            popup.webChromeClient = this
-
-            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-            transport.webView = popup
-            resultMsg.sendToTarget()
-
-            if (activity == null) {
-                Log.e("FF_NAV", "OAuth popup has no Activity; leaving it hidden rather than navigating the opener to about:blank")
-                activePopup = popup
-                return true
-            }
-
-            val dialog = Dialog(activity).apply {
-                setTitle("Sign in")
-                setCancelable(true)
-                setContentView(popup)
-                setOnDismissListener {
-                    if (activeDialog === this) dismissPopup(reloadAfterAuth = true)
-                }
-            }
-            activeDialog = dialog
-            activePopup = popup
-            runCatching {
-                dialog.show()
-                dialog.window?.setLayout(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                popupVisible = dialog.isShowing
-            }.onFailure { error ->
-                Log.e("FF_NAV", "Failed to show OAuth dialog", error)
-                popupVisible = false
-            }
-            return true
-        }
-    }
-
-    private inner class PopupClient : WebViewClient() {
-        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            if (!request.isForMainFrame) return false
-            val uri = request.url ?: return true
-            val scheme = uri.scheme?.lowercase() ?: return true
-            if (scheme == "about" || scheme == "javascript" || scheme == "blob" || scheme == "data") {
-                // Never forward about:blank into the opener. That is a blank page.
-                return false
-            }
-            if (!popupVisible && (scheme == "http" || scheme == "https")) {
-                val host = uri.host
-                if (host != null && isAllowedHost(host)) {
-                    Log.w("FF_NAV", "POPUP hidden, handoff $uri")
-                    handOffToMain(uri.toString())
-                } else {
-                    Log.w("FF_NAV", "POPUP hidden, block $uri")
-                }
-                return true
-            }
-            if (scheme == "intent") {
-                handleIntentUri(mainWebView ?: view, uri.toString())
-                return true
-            }
-            if (scheme != "http" && scheme != "https") return true
-            val host = uri.host ?: return true
-            if (!isAllowedHost(host)) {
-                Log.w("FF_NAV", "POPUP BLOCK $uri")
-                return true
-            }
-            if (isProductHost(host)) {
-                Log.d("FF_NAV", "POPUP HANDOFF $uri")
-                handOffToMain(uri.toString())
-                return true
-            }
-            if (isAuthProviderHost(host)) authFlowStarted = true
-            Log.d("FF_NAV", "POPUP ALLOW $uri")
+            // Never attach a second WebView. Instagram login calls window.open
+            // (often about:blank) and the visible page stays white if we take it.
+            Log.i("FF_BLANK", "ignored window.open so login stays in this WebView")
             return false
         }
-
-        override fun shouldInterceptRequest(
-            view: WebView,
-            request: WebResourceRequest
-        ): WebResourceResponse? = intercept(request)
     }
 
     fun configure(webView: WebView) {
         mainWebView = webView
-        applyCommonSettings(webView)
+        applySettings(webView)
         webView.webViewClient = Client()
         webView.webChromeClient = ChromeClient()
         webView.addJavascriptInterface(FocusFeedBridge(context), "FocusFeedBridge")
-
-        // addDocumentStartJavaScript stays disabled. It injected before Instagram
-        // created a document and left login / DM as a blank page. onPageStarted
-        // and onPageFinished are the only injection points.
+        handler.removeCallbacks(poll)
+        handler.postDelayed(poll, 1500)
+        // addDocumentStartJavaScript stays off. It blanked login.
     }
-
-    fun flush() = flushCookiesAsync()
 
     companion object {
         private val cookieIo = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "ff-cookie-flush").apply { isDaemon = true }
         }
 
-        /** CookieManager.flush() writes disk and must not run on the UI thread. */
         fun flushCookiesAsync() {
             cookieIo.execute {
                 runCatching { CookieManager.getInstance().flush() }

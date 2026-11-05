@@ -26,6 +26,7 @@ fun DashboardScreen(vm: FocusFeedViewModel) {
     val allowStories by vm.allowStories.collectAsState()
     val strictDmOnly by vm.strictDmOnly.collectAsState()
     val hideExplore by vm.hideExplore.collectAsState()
+    val injectionDisabled by vm.injectionDisabled.collectAsState()
 
     var watchdogActive by remember { mutableStateOf(false) }
 
@@ -204,9 +205,18 @@ fun DashboardScreen(vm: FocusFeedViewModel) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "If Instagram or YouTube shows a blank screen or login loop, clear the session.",
+                "If Instagram login is blank, leave injection off and clear the session. The WebView shows a one-line reason (auth-url, no-session, disabled). adb logcat -s FF_NAV:I FF_BLANK:I",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        item {
+            SettingsRow(
+                label = "Disable injection",
+                description = "Plain WebView. No Reels or Shorts script. Use this to prove a blank page is not the blocker.",
+                checked = injectionDisabled,
+                onCheckedChange = vm::setInjectionDisabled
             )
         }
 

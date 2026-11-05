@@ -1,6 +1,21 @@
 (function () {
   'use strict';
 
+  /* Sign-in and the debug kill-switch get no observers and no CSS. */
+  var __host = (location.hostname || '').toLowerCase();
+  var __path = location.pathname || '';
+  var __auth = __host.indexOf('accounts.') === 0 || __host.indexOf('consent.') === 0 ||
+    __path.indexOf('/signin') === 0 || __path.indexOf('/account') === 0;
+  var __off = false;
+  try {
+    __off = !!(window.FocusFeedBridge && FocusFeedBridge.isInjectionDisabled && FocusFeedBridge.isInjectionDisabled());
+  } catch (e) { __off = false; }
+  if (__auth || __off) {
+    var __old = document.getElementById('focusfeed-yt-css');
+    if (__old && __old.parentNode) __old.parentNode.removeChild(__old);
+    return;
+  }
+
   if (window.__ff_yt_tick) {
     try { window.__ff_yt_tick(); } catch (e) { /* keep the page up */ }
     return;

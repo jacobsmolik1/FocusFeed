@@ -36,6 +36,9 @@ class FocusFeedViewModel(app: Application) : AndroidViewModel(app) {
     private val _hideExplore = MutableStateFlow(FocusPrefs.isHideExplore(ctx))
     val hideExplore: StateFlow<Boolean> = _hideExplore
 
+    private val _injectionDisabled = MutableStateFlow(FocusPrefs.isInjectionDisabled(ctx))
+    val injectionDisabled: StateFlow<Boolean> = _injectionDisabled
+
     // ── Navigation ────────────────────────────────────────────────────
     fun onTabSelected(dest: NavDestination) {
         _currentDest.value = dest
@@ -68,5 +71,10 @@ class FocusFeedViewModel(app: Application) : AndroidViewModel(app) {
     fun setHideExplore(v: Boolean) {
         FocusPrefs.setHideExplore(ctx, v)
         _hideExplore.value = v
+    }
+
+    fun setInjectionDisabled(v: Boolean) {
+        FocusPrefs.setInjectionDisabled(ctx, v)
+        _injectionDisabled.value = v
     }
 }
